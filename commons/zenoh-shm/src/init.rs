@@ -12,6 +12,7 @@
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
 
+pub use crate::segment_cache::set_segment_release_interval;
 use crate::{
     api::client_storage::GLOBAL_CLIENT_STORAGE,
     cleanup::CLEANUP,

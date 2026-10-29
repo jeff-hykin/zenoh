@@ -15,15 +15,16 @@ use std::{
     collections::{btree_map::Entry, BTreeMap},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, Once, RwLock, Weak,
+        Arc, Condvar, Mutex, Once, RwLock, Weak,
     },
     time::Duration,
 };
 
 use zenoh_core::{zlock, zread, zwrite};
 
-// An entry is released when it was neither looked up nor referenced for one whole interval
-const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+// An entry is released when it was neither looked up nor referenced for one whole interval; zero never releases
+static SWEEP_INTERVAL: Mutex<Duration> = Mutex::new(Duration::from_secs(30));
+static SWEEP_INTERVAL_CHANGED: Condvar = Condvar::new();
 
 static CACHES: Mutex<Vec<Weak<dyn Sweep>>> = Mutex::new(Vec::new());
 
@@ -129,15 +130,41 @@ fn register(cache: Weak<dyn Sweep>) {
     SWEEPER.call_once(|| {
         let spawned = std::thread::Builder::new()
             .name("SHM segment sweeper".to_owned())
-            .spawn(|| loop {
-                std::thread::sleep(SWEEP_INTERVAL);
-                sweep_all();
+            .spawn(|| {
+                let mut interval = zlock!(SWEEP_INTERVAL);
+                loop {
+                    let current = *interval;
+                    if current.is_zero() {
+                        interval = SWEEP_INTERVAL_CHANGED
+                            .wait_while(interval, |i| *i == current)
+                            .unwrap();
+                        continue;
+                    }
+                    let (guard, wait) = SWEEP_INTERVAL_CHANGED
+                        .wait_timeout_while(interval, current, |i| *i == current)
+                        .unwrap();
+                    interval = guard;
+                    if wait.timed_out() {
+                        drop(interval);
+                        sweep_all();
+                        interval = zlock!(SWEEP_INTERVAL);
+                    }
+                }
             });
         if let Err(e) = spawned {
             tracing::warn!("Unable to start SHM segment sweeper, unused segments stay mapped: {e}");
         }
     });
     zlock!(CACHES).push(cache);
+}
+
+/// Set how often unused mappings of other processes' SHM segments are released (process-wide).
+///
+/// A mapping is released once no buffer uses it and it was not used for one to two intervals;
+/// [`Duration::ZERO`] keeps every mapping for the life of the process. The default is 30 seconds.
+pub fn set_segment_release_interval(interval: Duration) {
+    *zlock!(SWEEP_INTERVAL) = interval;
+    SWEEP_INTERVAL_CHANGED.notify_all();
 }
 
 /// Release the cached segments that were not used since the previous call.

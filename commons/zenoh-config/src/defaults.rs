@@ -325,6 +325,7 @@ impl Default for ShmConf {
         Self {
             enabled: true,
             mode: ShmInitMode::default(),
+            segment_release_interval_ms: None,
             transport_optimization: LargeMessageTransportOpt::default(),
         }
     }

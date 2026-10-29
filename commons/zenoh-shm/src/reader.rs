@@ -142,23 +142,29 @@ mod tests {
     use crate::{
         api::{client_storage::ShmClientStorage, provider::shm_provider::ShmProviderBuilder},
         metadata::subscription::GLOBAL_METADATA_SUBSCRIPTION,
-        segment_cache::sweep_all,
+        segment_cache::{set_segment_release_interval, sweep_all},
     };
 
+    // one test, as both phases share this process's metadata segment and the sweeper interval
     #[test]
     fn segments_are_released_after_last_buffer_drops() {
+        // zero stops the sweeper, so only the explicit sweeps below release anything
+        set_segment_release_interval(Duration::ZERO);
         let provider = ShmProviderBuilder::default_backend(65536).wait().unwrap();
         let mut sent = provider.alloc(64).wait().unwrap();
         sent.as_mut().fill(42);
-        // the receiver's buffer releases a reference that a real sender would have added for it
-        unsafe { sent.inner.inc_ref_count() };
-
         let reader = ShmReader::new(Arc::new(
             ShmClientStorage::builder()
                 .with_default_client_set()
                 .build(),
         ));
-        let received = reader.read_shmbuf(sent.inner.info.clone()).unwrap();
+        let receive = || {
+            // the receiver's buffer releases a reference that a real sender would have added for it
+            unsafe { sent.inner.inc_ref_count() };
+            reader.read_shmbuf(sent.inner.info.clone()).unwrap()
+        };
+
+        let received = receive();
         let data_id = get_global_id(
             received.protocol(),
             received.metadata.owned.header().data_descriptor().segment,
@@ -190,6 +196,15 @@ mod tests {
         // the metadata mapping goes once the confirmator task has let go of it
         std::thread::sleep(Duration::from_millis(200));
         sweep_all();
+        assert_eq!(is_mapped(), (false, false));
+
+        // with an interval set, the sweeper releases on its own
+        let received = receive();
+        set_segment_release_interval(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(is_mapped(), (true, true));
+        drop(received);
+        std::thread::sleep(Duration::from_millis(500));
         assert_eq!(is_mapped(), (false, false));
     }
 }

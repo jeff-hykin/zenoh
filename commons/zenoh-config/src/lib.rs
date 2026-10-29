@@ -833,6 +833,11 @@ validated_struct::validator! {
                 /// - "init": SHM subsystem internals will be initialized upon Session opening. This setting sacrifices
                 /// startup time, but guarantees no latency impact when first SHM buffer is processed.
                 mode: ShmInitMode,
+                /// How often, in milliseconds, unused mappings of other processes' SHM segments are released (default `30000`).
+                /// A mapping is released once no received buffer uses it and it has not been used for one to two intervals;
+                /// `0` keeps every mapping for the life of the process. The setting is process-wide: a session that sets it
+                /// applies it to the whole process, a session that leaves it unset keeps the current value.
+                segment_release_interval_ms: Option<u64>,
                 pub transport_optimization:
                 LargeMessageTransportOpt {
                     /// Enables transport optimization for large messages (default `true`).

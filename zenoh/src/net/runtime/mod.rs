@@ -808,6 +808,12 @@ impl RuntimeBuilder {
         // SHM lazy init flag
         #[cfg(feature = "shared-memory")]
         let shm_init_mode = *config.transport.shared_memory.mode();
+        #[cfg(feature = "shared-memory")]
+        if let Some(interval_ms) = *config.transport.shared_memory.segment_release_interval_ms() {
+            zenoh_shm::init::set_segment_release_interval(std::time::Duration::from_millis(
+                interval_ms,
+            ));
+        }
 
         let namespace = config.namespace().clone();
         let config = Notifier::new(config);
