@@ -118,7 +118,8 @@ impl<ID: SegmentID> SegmentImpl<ID> {
         };
 
         // map segment into our address space
-        let data_ptr = Self::map(len, fd).map_err(|e| SegmentCreateError::OsError(e as _))?;
+        let data_ptr =
+            Self::map(id, len, fd, true).map_err(|e| SegmentCreateError::OsError(e as _))?;
 
         Ok(Self {
             lock_fd,
@@ -189,7 +190,8 @@ impl<ID: SegmentID> SegmentImpl<ID> {
         };
 
         // map segment into our address space
-        let data_ptr = Self::map(len, fd).map_err(|e| SegmentOpenError::OsError(e as _))?;
+        let data_ptr =
+            Self::map(id, len, fd, false).map_err(|e| SegmentOpenError::OsError(e as _))?;
 
         Ok(Self {
             lock_fd,
@@ -272,7 +274,13 @@ impl<ID: SegmentID> SegmentImpl<ID> {
         format!("{id}.zenoh")
     }
 
-    fn map(len: NonZeroUsize, fd: &OwnedFd) -> nix::Result<NonNull<c_void>> {
+    // mlock failure is fatal when `lock_required` (pool creation), otherwise the mapping stays unlocked
+    fn map(
+        id: ID,
+        len: NonZeroUsize,
+        fd: &OwnedFd,
+        lock_required: bool,
+    ) -> nix::Result<NonNull<c_void>> {
         let prot = ProtFlags::PROT_READ | ProtFlags::PROT_WRITE;
         #[cfg(target_os = "linux")]
         let flags = MapFlags::MAP_SHARED | MapFlags::MAP_NORESERVE;
@@ -290,7 +298,21 @@ impl<ID: SegmentID> SegmentImpl<ID> {
 
         tracing::trace!("mlock(addr={:?}, length={})", ptr, len,);
         // SAFETY: this is safe as ptr produced by shm_open/mmap is page-aligned
-        unsafe { mlock(ptr, len.get()) }?;
+        if let Err(e) = unsafe { mlock(ptr, len.get()) } {
+            if lock_required {
+                // SAFETY: ptr and len are the mapping we just created
+                if let Err(munmap_err) = unsafe { munmap(ptr, len.get()) } {
+                    tracing::debug!("munmap() failed : {}", munmap_err);
+                }
+                return Err(e);
+            }
+            tracing::warn!(
+                "mlock() failed for SHM segment {} (len={}): {}; using it unlocked",
+                Self::id_str(id),
+                len,
+                e
+            );
+        }
 
         Ok(ptr)
     }

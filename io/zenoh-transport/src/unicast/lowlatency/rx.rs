@@ -50,7 +50,7 @@ impl TransportUnicastLowlatency {
                     &shm_context.shm_reader,
                     rx_handoff,
                 ) {
-                    tracing::debug!("Error receiving SHM buffer: {e}");
+                    tracing::warn!("Dropping received SHM sample: {e}");
                     return Ok(());
                 }
             }

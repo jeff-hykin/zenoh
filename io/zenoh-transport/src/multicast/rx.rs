@@ -57,7 +57,7 @@ impl TransportMulticastInner {
                     &shm_context.shm_reader,
                     &RxHandoffChannel::Disabled, // Multicast transport is unreliable, so it don't support SHM handoff
                 ) {
-                    tracing::debug!("Error receiving SHM buffer: {e}");
+                    tracing::warn!("Dropping received SHM sample: {e}");
                     return Ok(());
                 }
             }
