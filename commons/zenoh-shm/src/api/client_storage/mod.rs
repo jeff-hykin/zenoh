@@ -12,10 +12,7 @@
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
 
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, RwLock},
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use static_init::dynamic;
 use zenoh_result::{bail, ZResult};
@@ -27,6 +24,7 @@ use crate::{
         protocol_implementations::posix::posix_shm_client::PosixShmClient,
     },
     reader::{ClientStorage, GlobalDataSegmentId},
+    segment_cache::SegmentCache,
 };
 
 #[dynamic(lazy, drop)]
@@ -129,7 +127,7 @@ impl ShmClientStorageBuilder {
 #[derive(Debug)]
 pub struct ShmClientStorage {
     pub(crate) clients: ClientStorage<Arc<dyn ShmClient>>,
-    pub(crate) segments: RwLock<BTreeMap<GlobalDataSegmentId, Arc<dyn ShmSegment>>>,
+    pub(crate) segments: Arc<SegmentCache<GlobalDataSegmentId, dyn ShmSegment>>,
 }
 
 impl Eq for ShmClientStorage {}
@@ -156,7 +154,7 @@ impl ShmClientStorage {
     fn new(clients: BTreeMap<ProtocolID, Arc<dyn ShmClient>>) -> Self {
         Self {
             clients: ClientStorage::new(clients),
-            segments: RwLock::default(),
+            segments: SegmentCache::new(0),
         }
     }
 }

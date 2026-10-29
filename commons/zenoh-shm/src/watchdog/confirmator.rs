@@ -14,19 +14,22 @@
 
 use std::{
     collections::{btree_map::Entry, BTreeMap},
+    convert::Infallible,
     ops::Deref,
-    sync::{atomic::AtomicI32, Arc, RwLock},
+    sync::{atomic::AtomicI32, Arc},
     time::Duration,
 };
 
 use crossbeam_queue::SegQueue;
 use static_init::dynamic;
-use zenoh_core::{zread, zwrite};
 
 use super::periodic_task::PeriodicTask;
-use crate::metadata::{
-    descriptor::{MetadataSegmentID, OwnedMetadataDescriptor, OwnedWatchdog},
-    segment::MetadataSegment,
+use crate::{
+    metadata::{
+        descriptor::{OwnedMetadataDescriptor, OwnedWatchdog},
+        segment::MetadataSegment,
+    },
+    segment_cache::SegmentCache,
 };
 
 #[dynamic(lazy, drop)]
@@ -151,7 +154,8 @@ impl ConfirmedSegment {
 // TODO: optimize confirmation by packing descriptors AND linked table together
 // TODO: think about linked table cleanup
 pub struct WatchdogConfirmator {
-    confirmed: RwLock<BTreeMap<MetadataSegmentID, Arc<ConfirmedSegment>>>,
+    // keyed by mapping (not segment id): every watchdog an entry tracks points into the mapping it keeps alive
+    confirmed: Arc<SegmentCache<usize, ConfirmedSegment>>,
     segment_transactions: Arc<SegQueue<Arc<ConfirmedSegment>>>,
     task: PeriodicTask,
 }
@@ -181,6 +185,9 @@ impl WatchdogConfirmator {
                     segments.push((new_segment, BTreeMap::default()));
                 }
 
+                // forget segments that no descriptor references and the sweeper released
+                segments.retain(|(segment, _)| Arc::strong_count(segment) > 1);
+
                 // collect all existing transactions
                 for (segment, watchdogs) in &mut segments {
                     segment.collect_transactions(watchdogs);
@@ -196,7 +203,8 @@ impl WatchdogConfirmator {
         );
 
         Self {
-            confirmed: RwLock::default(),
+            // the confirmator task holds the other reference
+            confirmed: SegmentCache::new(1),
             segment_transactions,
             task,
         }
@@ -206,30 +214,18 @@ impl WatchdogConfirmator {
         // confirm ASAP!
         descriptor.confirm();
 
-        let guard = zread!(self.confirmed);
-        if let Some(segment) = guard.get(&descriptor.segment.data.id()) {
-            return ConfirmedDescriptor::new(descriptor, segment.clone());
-        }
-        drop(guard);
-
-        let confirmed_segment = Arc::new(ConfirmedSegment::new(
-            descriptor.segment.clone(),
-            self.task.kicker(),
-        ));
-        let confirmed_descriptoir =
-            ConfirmedDescriptor::new(descriptor.clone(), confirmed_segment.clone());
-
-        let mut guard = zwrite!(self.confirmed);
-        match guard.entry(descriptor.segment.data.id()) {
-            std::collections::btree_map::Entry::Vacant(vacant) => {
-                vacant.insert(confirmed_segment.clone());
-                self.segment_transactions.push(confirmed_segment);
-                confirmed_descriptoir
-            }
-            std::collections::btree_map::Entry::Occupied(occupied) => {
-                // this is intentional
-                ConfirmedDescriptor::new(descriptor, occupied.get().clone())
-            }
-        }
+        let key = Arc::as_ptr(&descriptor.segment) as usize;
+        let confirmed_segment = self
+            .confirmed
+            .get_or_try_insert(key, || {
+                let confirmed_segment = Arc::new(ConfirmedSegment::new(
+                    descriptor.segment.clone(),
+                    self.task.kicker(),
+                ));
+                self.segment_transactions.push(confirmed_segment.clone());
+                Ok::<_, Infallible>(confirmed_segment)
+            })
+            .unwrap_or_else(|e| match e {});
+        ConfirmedDescriptor::new(descriptor, confirmed_segment)
     }
 }

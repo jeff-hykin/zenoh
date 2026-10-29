@@ -61,6 +61,7 @@ pub mod init;
 pub mod metadata;
 pub mod posix_shm;
 pub mod reader;
+mod segment_cache;
 pub mod shm;
 pub mod version;
 pub mod watchdog;
